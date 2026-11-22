@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Angebotsradar</title>
+<style>/*CSS*/</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <h1>Angebotsradar</h1>
+    <button id="loc" class="chip" type="button">Standort wählen</button>
+  </div>
+  <form id="search" class="search">
+    <input id="q" type="search" placeholder="Produkt suchen, z. B. Butter" autocomplete="off" enterkeyhint="search">
+    <button type="submit">Suchen</button>
+  </form>
+  <label class="radius">
+    <span>Umkreis <b id="rv"></b></span>
+    <input id="radius" type="range" min="1" max="25" step="1">
+  </label>
+</header>
+<main>
+  <section id="watch"></section>
+  <section id="results"></section>
+  <section id="stores"></section>
+  <details id="diag"><summary>Quellen-Status</summary><div id="diag-body"></div></details>
+</main>
+<dialog id="locdlg">
+  <form method="dialog">
+    <h2>Standort</h2>
+    <button type="button" id="gps" class="primary">Aktuellen Standort verwenden</button>
+    <p class="muted">oder Postleitzahl / Ort eingeben</p>
+    <div class="search"><input id="place" placeholder="z. B. 50667 oder Köln"><button type="button" id="placego">OK</button></div>
+    <p id="locmsg" class="muted"></p>
+    <button class="ghost">Schließen</button>
+  </form>
+</dialog>
+<div id="toast" hidden></div>
+<script>/*JS*/</script>
+</body>
+</html>

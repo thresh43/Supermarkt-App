@@ -1,0 +1,18 @@
+{
+  "appId": "de.tobi.angebotsradar",
+  "appName": "Angebotsradar",
+  "webDir": "www",
+  "android": { "backgroundColor": "#0f1115" },
+  "plugins": {
+    "CapacitorHttp": { "enabled": true },
+    "LocalNotifications": { "smallIcon": "ic_stat_offer", "iconColor": "#16a34a" },
+    "BackgroundRunner": {
+      "label": "de.tobi.angebotsradar.watch",
+      "src": "runners/offers.js",
+      "event": "checkOffers",
+      "repeat": true,
+      "interval": 60,
+      "autoStart": true
+    }
+  }
+}
