@@ -215,6 +215,45 @@ async function syncRunner() {
   try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, zip: S.loc ? S.loc.zip : "", chains } }); } catch (e) { /* runner not ready */ }
 }
 
+/* ---------- in-app updates (Android app only) ---------- */
+// Every push to main builds a GitHub release; the app compares its build number with the latest one.
+const REPO = "thresh43/Supermarkt-App";
+const Updater = plugin("AppUpdater");
+const UPD = { current: "", code: 0, avail: null, busy: false };
+function renderUpdate() {
+  $("update").innerHTML = UPD.avail ? `<div class="card"><div class="row"><div><div class="t">Update verfügbar</div>
+    <div class="sub">Version ${esc(UPD.avail.name)} · deine Einstellungen bleiben erhalten</div></div>
+    <button class="primary" id="doupdate" ${UPD.busy ? "disabled" : ""}>${UPD.busy ? "Lädt …" : "Aktualisieren"}</button></div></div>` : "";
+  $("about").innerHTML = Updater ? `<span class="sub">Version ${esc(UPD.current || "?")}</span><button class="ghost" id="checkupdate">Nach Updates suchen</button>` : "";
+}
+async function checkUpdate(manual) {
+  if (!Updater) return;
+  try {
+    const v = await Updater.getVersion();
+    UPD.current = v.versionName; UPD.code = +v.versionCode;
+    const res = await fetch("https://api.github.com/repos/" + REPO + "/releases/latest", { cache: "no-store" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    const rel = await res.json();
+    const n = +String(rel.tag_name || "").split(".").pop();
+    const asset = (rel.assets || []).find(a => /\.apk$/i.test(a.name));
+    UPD.avail = n > UPD.code && asset ? { name: String(rel.tag_name).replace(/^v/, ""), url: asset.browser_download_url } : null;
+    if (manual) toast(UPD.avail ? "Neue Version gefunden." : "Du hast die neueste Version (" + UPD.current + ").");
+  } catch (e) { if (manual) toast("Update-Prüfung fehlgeschlagen (" + ((e && e.message) || e) + ")."); }
+  renderUpdate();
+}
+async function doUpdate() {
+  if (!UPD.avail || UPD.busy) return;
+  UPD.busy = true; renderUpdate();
+  try {
+    const r = await Updater.downloadAndInstall({ url: UPD.avail.url });
+    if (r.status === "permission") toast("Bitte die Installation aus dieser App erlauben und dann erneut auf Aktualisieren tippen.");
+  } catch (e) { toast((e && e.message) || "Update fehlgeschlagen."); }
+  UPD.busy = false; renderUpdate();
+}
+$("update").addEventListener("click", e => { if (e.target.id === "doupdate") doUpdate(); });
+$("about").addEventListener("click", e => { if (e.target.id === "checkupdate") checkUpdate(true); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdate(false); });
+
 /* ---------- events ---------- */
 $("search").addEventListener("submit", e => { e.preventDefault(); const q = $("q").value.trim(); if (q) { $("q").blur(); runSearch(q); } });
 $("q").addEventListener("search", () => { if (!$("q").value) { lastSearch = null; renderResults(); } });
@@ -242,3 +281,4 @@ $("watch").addEventListener("submit", e => {
 });
 
 refresh();
+checkUpdate(false);
