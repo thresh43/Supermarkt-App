@@ -184,9 +184,10 @@ function distanceKm(aLat, aLon, bLat, bLon) {
 
 // Search for a watched product. `exact` names the product in full; `maybe` is an offer of the
 // same brand where the flyer does not name the variant, so it has to be checked in the store.
-async function watchSearch(term, loc, httpGet) {
+// `query` is the search term whose page listed the product, if it was added from search results.
+async function watchSearch(term, loc, httpGet, query) {
   const words = fold(term).split(" ").filter(Boolean);
-  const r = await searchOffers(term, loc, httpGet);
+  const r = await searchOffers(query || term, loc, httpGet);
   const exact = [], maybe = [];
   const score = o => { const hay = fold(o.brand + " " + o.title); return words.filter(w => hay.indexOf(w) >= 0).length; };
   for (const o of r.offers) {

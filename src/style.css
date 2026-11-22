@@ -64,3 +64,11 @@ body.settings #tools,body.settings #loc{display:none}body.settings .bar{margin-b
 .fold[open] .arrow{transform:rotate(45deg)}
 .tag.none{background:transparent;color:var(--muted);border:1px solid var(--line)}
 .x{padding:4px 8px}
+.search .icon{background:var(--card);color:var(--text);border:1px solid var(--line);padding:0 11px;display:grid;place-items:center}
+.icon.busy svg{animation:s .7s linear infinite}
+.acts{display:flex;gap:8px;flex:none}
+.add{border:1px solid var(--accent);background:transparent;color:var(--accent);border-radius:8px;padding:7px 10px;font-weight:600;font-size:14px}
+.add:disabled{border-color:var(--line);color:var(--muted);opacity:1}
+.foot{flex-wrap:wrap}
+.head h2{min-width:0;overflow-wrap:anywhere}.head .add{flex:none;margin-left:10px}
+.acts,.foot>.add{margin-left:auto}

@@ -7,7 +7,7 @@ const LN = plugin("LocalNotifications"), BR = plugin("BackgroundRunner"), GEO = 
 const RUNNER = "de.tobi.angebotsradar.watch";
 const UA = { "User-Agent": "Angebotsradar/0.1 (private Android app)" };
 
-const S = Object.assign({ loc: null, radius: 5, watch: ["Monster Energy Ultra White"], notify: false, stores: {}, open: {} },
+const S = Object.assign({ loc: null, radius: 5, watch: ["Monster Energy Ultra White"], notify: false, stores: {}, open: {}, watchQ: {} },
   JSON.parse(localStorage.getItem("state") || "{}"));
 if (S.watch[0] === "Monster Ultra White") S.watch[0] = "Monster Energy Ultra White"; // first releases used a term the sources do not know
 if (!S.stores || S.stores.list) S.stores = {}; // older releases cached one big store list
@@ -129,10 +129,15 @@ function validity(o) {
   const left = days <= 0 ? "endet heute" : days === 1 ? "noch 1 Tag" : "noch " + days + " Tage";
   return { text: left + " · bis " + fmt(o.to), soon: days <= 1 };
 }
-function offerCard(o, note) {
+const displayName = o => (o.brand && fold(o.title).indexOf(fold(o.brand)) < 0 ? o.brand + " " + o.title : o.title);
+const watchButton = name => (S.watch.indexOf(name) >= 0 ? `<button class="add" disabled>✓ Beobachtet</button>`
+  : `<button class="add" data-watch="${esc(name)}">+ Beobachten</button>`);
+// `canWatch` adds the button that puts the product on the watch list (search results only).
+function offerCard(o, note, canWatch) {
   const st = nearest(o.chain), v = validity(o);
   const img = o.image ? `<img src="${esc(o.image)}" alt="" loading="lazy">` : `<div class="ph">%</div>`;
-  const title = o.brand && fold(o.title).indexOf(fold(o.brand)) < 0 ? o.brand + " " + o.title : o.title, sub = o.desc;
+  const title = displayName(o), sub = o.desc;
+  const watch = canWatch ? watchButton(title) : "";
   return `<article class="card offer">${img}
     <div><div class="t">${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>
     <div class="price">${fmtPrice(o.price)}${o.oldPrice && o.oldPrice > o.price ? `<s>${fmtPrice(o.oldPrice)}</s>` : ""}</div>
@@ -140,9 +145,9 @@ function offerCard(o, note) {
       ${note ? `<span class="tag warn">${esc(note)}</span>` : ""}
       <a class="sub" href="${esc(o.url)}" target="_blank" rel="noopener">Quelle: ${esc(o.source)}</a></div>
     <div class="foot">${st
-      ? `<div class="sub">${esc(st.name)} · ${km(st.km)}${st.addr ? "<br>" + esc(st.addr) : ""}</div><a class="route" href="${routeUrl(st)}" target="_blank" rel="noopener">Route</a>`
+      ? `<div class="sub">${esc(st.name)} · ${km(st.km)}${st.addr ? "<br>" + esc(st.addr) : ""}</div><div class="acts">${watch}<a class="route" href="${routeUrl(st)}" target="_blank" rel="noopener">Route</a></div>`
       : `<div class="sub">${!S.loc ? "Standort wählen, um den nächsten Markt zu sehen" : lookups[o.chain] === "failed" ? "Nächster Markt konnte nicht ermittelt werden"
-        : known(o.chain) ? "Kein Markt dieser Kette im Umkreis" : `<span class="spin"></span>Nächster Markt wird gesucht …`}</div>`}</div>
+        : known(o.chain) ? "Kein Markt dieser Kette im Umkreis" : `<span class="spin"></span>Nächster Markt wird gesucht …`}</div>${watch}`}</div>
   </article>`;
 }
 // Offers at chains with a store in the radius, nearest store first. An offer stays visible while
@@ -170,15 +175,14 @@ function renderWatch() {
   }).join("");
   $("watch").innerHTML = `<div class="head"><h2>Beobachtet</h2>
       <label class="switch"><input type="checkbox" id="notify" ${S.notify ? "checked" : ""}>Benachrichtigen</label></div>
-    ${rows || `<p class="muted">Noch nichts auf der Liste.</p>`}
-    <form id="addwatch" class="search"><input id="wq" placeholder="Produkt beobachten" autocomplete="off"><button type="submit">+</button></form>`;
+    ${rows || `<p class="muted">Noch nichts auf der Liste. Suche oben ein Produkt und tippe auf „Beobachten“.</p>`}`;
 }
 function renderResults() {
   if (!lastSearch) { $("results").innerHTML = ""; return; }
   if (lastSearch.loading) { $("results").innerHTML = `<h2>Suche</h2><p class="muted"><span class="spin"></span>„${esc(lastSearch.q)}“ wird gesucht …</p>`; return; }
   const all = lastSearch.offers, near = inRadius(all), far = all.length - near.length;
-  $("results").innerHTML = `<h2>${near.length} Angebot${near.length === 1 ? "" : "e"} für „${esc(lastSearch.q)}“</h2>`
-    + (near.map(o => offerCard(o)).join("") || `<p class="muted">Kein Angebot im Umkreis von ${S.radius} km gefunden.</p>`)
+  $("results").innerHTML = `<div class="head"><h2>${near.length} Angebot${near.length === 1 ? "" : "e"} für „${esc(lastSearch.q)}“</h2>${watchButton(lastSearch.q)}</div>`
+    + (near.map(o => offerCard(o, "", true)).join("") || `<p class="muted">Kein Angebot im Umkreis von ${S.radius} km gefunden.</p>`)
     + (far > 0 ? `<p class="muted">${far} weitere${far === 1 ? "s" : ""} Angebot${far === 1 ? "" : "e"} bei Ketten ohne Markt im Umkreis.</p>` : "");
 }
 function renderStores() {
@@ -218,7 +222,7 @@ function refresh() {
 }
 async function checkWatch() {
   for (const term of S.watch) {
-    try { const r = await watchSearch(term, S.loc, httpGet); watchHits[term] = r; reports = r.report; }
+    try { const r = await watchSearch(term, S.loc, httpGet, S.watchQ[term]); watchHits[term] = r; reports = r.report; }
     catch (e) { watchHits[term] = { error: (e && e.message) || String(e) }; }
     renderWatch(); renderDiag();
     ensureStores(shownOffers());
@@ -253,7 +257,7 @@ async function syncRunner() {
   const chains = {};
   for (const s of stores) if (!chains[s.chain]) chains[s.chain] = { km: s.km };
   const far = Object.keys(S.stores).filter(c => known(c) && !chains[c]); // chains known to have no store in the radius
-  try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, loc: S.loc, chains, far } }); } catch (e) { /* runner not ready */ }
+  try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, watchQ: S.watchQ, loc: S.loc, chains, far } }); } catch (e) { /* runner not ready */ }
 }
 
 /* ---------- in-app updates (Android app only) ---------- */
@@ -332,7 +336,7 @@ $("placego").addEventListener("click", usePlace);
 $("place").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); usePlace(); } });
 $("watch").addEventListener("click", e => {
   const d = e.target.dataset.del;
-  if (d != null) { e.preventDefault(); delete watchHits[S.watch[+d]]; delete S.open[S.watch[+d]]; S.watch.splice(+d, 1); save(); renderWatch(); syncRunner(); }
+  if (d != null) { e.preventDefault(); delete watchHits[S.watch[+d]]; delete S.open[S.watch[+d]]; delete S.watchQ[S.watch[+d]]; S.watch.splice(+d, 1); save(); renderWatch(); renderResults(); syncRunner(); }
 });
 // Remember which products are unfolded ("toggle" does not bubble, hence the capture listener).
 $("watch").addEventListener("toggle", e => { const t = e.target.dataset && e.target.dataset.term; if (t) { S.open[t] = e.target.open; save(); } }, true);
@@ -342,10 +346,26 @@ $("watch").addEventListener("change", async e => {
   e.target.checked = S.notify; save(); syncRunner();
   if (S.notify) toast("Du bekommst höchstens einmal am Tag eine Meldung, wenn es ein neues Angebot gibt.");
 });
-$("watch").addEventListener("submit", e => {
-  e.preventDefault();
-  const v = $("wq").value.trim();
-  if (v && S.watch.indexOf(v) < 0) { S.watch.push(v); S.open[v] = true; save(); renderWatch(); syncRunner(); checkWatch(); }
+// "Beobachten" in the search results: remember the product together with the search term that found it.
+$("results").addEventListener("click", e => {
+  const name = e.target.dataset.watch;
+  if (!name || S.watch.indexOf(name) >= 0) return;
+  S.watch.push(name);
+  if (lastSearch && fold(name) !== fold(lastSearch.q)) S.watchQ[name] = lastSearch.q;
+  save(); renderWatch(); renderResults(); syncRunner(); checkWatch();
+  toast("„" + name + "“ wird jetzt beobachtet.");
+});
+// Reload everything: watched products, the current search and the app version.
+$("reload").addEventListener("click", async () => {
+  const btn = $("reload");
+  if (btn.classList.contains("busy")) return;
+  btn.classList.add("busy");
+  try {
+    watchHits = {}; renderWatch();
+    await Promise.all([checkWatch(), lastSearch && !lastSearch.loading ? runSearch(lastSearch.q) : null, checkUpdate()]);
+    toast("Angebote aktualisiert.");
+  } catch (e) { toast("Aktualisieren fehlgeschlagen: " + ((e && e.message) || e)); }
+  btn.classList.remove("busy");
 });
 
 refresh();
