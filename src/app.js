@@ -2,14 +2,15 @@
 const $ = id => document.getElementById(id);
 const Cap = window.Capacitor;
 const isNative = !!(Cap && Cap.isNativePlatform && Cap.isNativePlatform());
-const plugin = n => (isNative && Cap.registerPlugin ? Cap.registerPlugin(n) : null);
+const plugin = n => (isNative ? Cap.registerPlugin(n) : null);
 const LN = plugin("LocalNotifications"), BR = plugin("BackgroundRunner"), GEO = plugin("Geolocation");
 const RUNNER = "de.tobi.angebotsradar.watch";
 const UA = { "User-Agent": "Angebotsradar/0.1 (private Android app)" };
 
-const S = Object.assign({ loc: null, radius: 5, watch: ["Monster Energy Ultra White"], notify: false, stores: null },
+const S = Object.assign({ loc: null, radius: 5, watch: ["Monster Energy Ultra White"], notify: false, stores: {}, open: {} },
   JSON.parse(localStorage.getItem("state") || "{}"));
 if (S.watch[0] === "Monster Ultra White") S.watch[0] = "Monster Energy Ultra White"; // first releases used a term the sources do not know
+if (!S.stores || S.stores.list) S.stores = {}; // older releases cached one big store list
 const save = () => localStorage.setItem("state", JSON.stringify(S));
 let stores = [];          // stores inside the radius, nearest first
 let lastSearch = null;    // { q, offers }
@@ -71,37 +72,50 @@ async function usePlace() {
   } catch (e) { $("locmsg").textContent = (e && e.message) || String(e); }
 }
 function setLocation(loc) {
-  S.loc = loc; S.stores = null; save();
+  S.loc = loc; S.stores = {}; lookups = {}; save();
   $("locdlg").close(); $("locmsg").textContent = "";
   refresh();
 }
 
-const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
-// All shops within 25 km are fetched once per location and cached for a day; the radius filters locally.
-async function loadStores() {
-  const c = S.stores;
-  if (c && Date.now() - c.at < 864e5) return c.list;
-  const q = `[out:json][timeout:25];nwr["shop"~"^(supermarket|convenience|beverages|chemist|wholesale)$"](around:25000,${S.loc.lat},${S.loc.lon});out center tags;`;
-  // Public Overpass servers are sometimes overloaded, so try the mirrors in turn.
-  let res = null, err = null;
-  for (const host of OVERPASS) {
-    try {
-      res = await fetch(host, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(q) });
-      if (res.ok) break;
-      err = new Error("HTTP " + res.status); res = null;
-    } catch (e) { err = e; }
+// Stores are looked up per chain, only for chains that have an offer, and cached for a week:
+// S.stores = { chainKey: { at, r, list } } where r is the radius the lookup covered.
+let lookups = {};                    // chainKey -> "busy" | "failed"
+let lookupQueue = Promise.resolve(); // the address service allows one request per second
+const known = chain => { const c = S.stores[chain]; return !!c && c.r >= S.radius && Date.now() - c.at < 6048e5; };
+async function findStores(chain, label) {
+  const { lat, lon } = S.loc, list = [], seen = {};
+  // A small box first: results are capped and unsorted, so a wide box can miss the nearest store.
+  for (const r of S.radius > 4 ? [4, S.radius] : [S.radius]) {
+    const dLat = r / 111, dLon = r / (111 * Math.cos(lat * Math.PI / 180));
+    const box = [lon - dLon, lat + dLat, lon + dLon, lat - dLat].map(n => n.toFixed(4)).join(",");
+    const res = await fetch("https://nominatim.openstreetmap.org/search?format=json&addressdetails=1&limit=40&bounded=1&viewbox=" + box + "&q=" + encodeURIComponent(label), { headers: UA });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    for (const h of await res.json()) {
+      const c = chainOf(h.name);
+      if (h.class !== "shop" || !c || c.key !== chain || seen[h.place_id]) continue;
+      seen[h.place_id] = 1;
+      const a = h.address || {};
+      list.push({ chain, name: h.name, lat: +h.lat, lon: +h.lon,
+        addr: [[a.road, a.house_number].filter(Boolean).join(" "), a.city || a.town || a.village || a.suburb].filter(Boolean).join(", ") });
+    }
+    if (list.length) break;
+    await new Promise(ok => setTimeout(ok, 1100));
   }
-  if (!res) throw err;
-  const list = [];
-  for (const e of (await res.json()).elements || []) {
-    const t = e.tags || {}, lat = e.lat != null ? e.lat : e.center && e.center.lat, lon = e.lon != null ? e.lon : e.center && e.center.lon;
-    const chain = chainOf(t.brand || t.name || t.operator);
-    if (!chain || lat == null) continue;
-    const addr = [[t["addr:street"], t["addr:housenumber"]].filter(Boolean).join(" "), t["addr:city"]].filter(Boolean).join(", ");
-    list.push({ chain: chain.key, name: t.name || chain.label, addr, lat, lon });
+  S.stores[chain] = { at: Date.now(), r: S.radius, list }; save();
+}
+// Looks up the stores for the chains of these offers, one after the other, and redraws as they arrive.
+function ensureStores(offers) {
+  if (!S.loc) return;
+  for (const o of offers) {
+    if (known(o.chain) || lookups[o.chain] === "busy") continue;
+    lookups[o.chain] = "busy";
+    lookupQueue = lookupQueue.then(async () => {
+      try { await findStores(o.chain, o.retailer); delete lookups[o.chain]; }
+      catch (e) { lookups[o.chain] = "failed"; }
+      applyRadius(); renderWatch(); renderResults(); renderStores(); syncRunner();
+      await new Promise(ok => setTimeout(ok, 1100));
+    });
   }
-  S.stores = { at: Date.now(), list }; save();
-  return list;
 }
 function nearest(chain) { return stores.find(s => s.chain === chain) || null; }
 const routeUrl = s => `https://www.google.com/maps/dir/?api=1&destination=${s.lat},${s.lon}&travelmode=driving&dir_action=navigate`;
@@ -127,26 +141,32 @@ function offerCard(o, note) {
       <a class="sub" href="${esc(o.url)}" target="_blank" rel="noopener">Quelle: ${esc(o.source)}</a></div>
     <div class="foot">${st
       ? `<div class="sub">${esc(st.name)} · ${km(st.km)}${st.addr ? "<br>" + esc(st.addr) : ""}</div><a class="route" href="${routeUrl(st)}" target="_blank" rel="noopener">Route</a>`
-      : `<div class="sub">${S.loc ? "Kein Markt dieser Kette im Umkreis" : "Standort wählen, um den nächsten Markt zu sehen"}</div>`}</div>
+      : `<div class="sub">${!S.loc ? "Standort wählen, um den nächsten Markt zu sehen" : lookups[o.chain] === "failed" ? "Nächster Markt konnte nicht ermittelt werden"
+        : known(o.chain) ? "Kein Markt dieser Kette im Umkreis" : `<span class="spin"></span>Nächster Markt wird gesucht …`}</div>`}</div>
   </article>`;
 }
-// Offers at chains with a store in the radius, nearest store first. Without a location everything is shown.
+// Offers at chains with a store in the radius, nearest store first. An offer stays visible while
+// its chain is still being looked up or the lookup failed, so a broken map service hides nothing.
 function inRadius(list) {
   if (!S.loc) return list.slice();
-  return list.filter(o => nearest(o.chain)).sort((a, b) => (b.rank || 0) - (a.rank || 0) || nearest(a.chain).km - nearest(b.chain).km || a.price - b.price);
+  const dist = o => { const st = nearest(o.chain); return st ? st.km : 999; };
+  return list.filter(o => nearest(o.chain) || !known(o.chain)).sort((a, b) => (b.rank || 0) - (a.rank || 0) || dist(a) - dist(b) || a.price - b.price);
 }
 
+// Each watched product is a collapsible block: the summary shows the name and the number of offers.
 function renderWatch() {
   const rows = S.watch.map((term, i) => {
     const h = watchHits[term];
-    let body = `<p class="muted"><span class="spin"></span>wird geprüft …</p>`;
-    if (h && h.error) body = `<p class="muted">Prüfung fehlgeschlagen: ${esc(h.error)}</p>`;
+    let body = `<p class="muted"><span class="spin"></span>wird geprüft …</p>`, count = "…";
+    if (h && h.error) { body = `<p class="muted">Prüfung fehlgeschlagen: ${esc(h.error)}</p>`; count = "!"; }
     else if (h) {
       const ex = inRadius(h.exact), mb = inRadius(h.maybe);
       body = ex.map(o => offerCard(o)).join("") + mb.map(o => offerCard(o, "Sorte im Markt prüfen")).join("");
       if (!body) body = `<p class="muted">Aktuell kein Angebot im Umkreis gefunden.</p>`;
+      count = ex.length + mb.length;
     }
-    return `<div class="head"><b>${esc(term)}</b><button class="x" data-del="${i}" aria-label="Entfernen">×</button></div>${body}`;
+    return `<details class="fold" data-term="${esc(term)}" ${S.open[term] ? "open" : ""}><summary><span class="arrow"></span><b>${esc(term)}</b>
+      <span class="tag${count === 0 ? " none" : ""}">${count}</span><button class="x" data-del="${i}" aria-label="Entfernen">×</button></summary>${body}</details>`;
   }).join("");
   $("watch").innerHTML = `<div class="head"><h2>Beobachtet</h2>
       <label class="switch"><input type="checkbox" id="notify" ${S.notify ? "checked" : ""}>Benachrichtigen</label></div>
@@ -161,15 +181,13 @@ function renderResults() {
     + (near.map(o => offerCard(o)).join("") || `<p class="muted">Kein Angebot im Umkreis von ${S.radius} km gefunden.</p>`)
     + (far > 0 ? `<p class="muted">${far} weitere${far === 1 ? "s" : ""} Angebot${far === 1 ? "" : "e"} bei Ketten ohne Markt im Umkreis.</p>` : "");
 }
-function renderStores(error) {
+function renderStores() {
   if (!S.loc) { $("stores").innerHTML = `<h2>Märkte im Umkreis</h2><p class="muted">Wähle oben deinen Standort, damit Angebote auf Märkte in deiner Nähe eingegrenzt werden.</p>`; return; }
-  if (error) { $("stores").innerHTML = `<h2>Märkte im Umkreis</h2><p class="muted">Märkte konnten nicht geladen werden (${esc(error)}).</p><button class="ghost" id="retry">Erneut versuchen</button>`; return; }
   const seen = {}, rows = [];
   for (const s of stores) { if (seen[s.chain]) continue; seen[s.chain] = 1; rows.push(s); }
-  $("stores").innerHTML = `<h2>Märkte im Umkreis · ${rows.length} Ketten</h2>` + (rows.length ? `<div class="card">${rows.map(s =>
+  $("stores").innerHTML = rows.length ? `<h2>Märkte mit Angeboten im Umkreis</h2><div class="card">${rows.map(s =>
     `<div class="row"><div><div class="t">${esc(s.name)}</div><div class="sub">${km(s.km)}${s.addr ? " · " + esc(s.addr) : ""}</div></div>
-     <a class="route" href="${routeUrl(s)}" target="_blank" rel="noopener">Route</a></div>`).join("")}</div>`
-    : `<p class="muted">Kein Markt im Umkreis von ${S.radius} km gefunden.</p>`);
+     <a class="route" href="${routeUrl(s)}" target="_blank" rel="noopener">Route</a></div>`).join("")}</div>` : "";
 }
 function renderDiag() {
   $("diag-body").innerHTML = reports.length ? reports.map(r =>
@@ -184,16 +202,17 @@ function render() {
 
 /* ---------- actions ---------- */
 function applyRadius() {
-  const all = (S.stores && S.stores.list) || [];
-  stores = S.loc ? all.map(s => Object.assign({}, s, { km: distanceKm(S.loc.lat, S.loc.lon, s.lat, s.lon) }))
-    .filter(s => s.km <= S.radius).sort((a, b) => a.km - b.km) : [];
-}
-async function refresh() {
-  applyRadius(); render(); renderStores();
-  if (S.loc) {
-    try { await loadStores(); applyRadius(); render(); renderStores(); }
-    catch (e) { renderStores((e && e.message) || String(e)); }
+  stores = [];
+  if (!S.loc) return;
+  for (const chain in S.stores) for (const s of S.stores[chain].list) {
+    const d = distanceKm(S.loc.lat, S.loc.lon, s.lat, s.lon);
+    if (d <= S.radius) stores.push(Object.assign({ km: d }, s));
   }
+  stores.sort((a, b) => a.km - b.km);
+}
+const shownOffers = () => Object.values(watchHits).reduce((all, h) => all.concat(h.exact || [], h.maybe || []), (lastSearch && lastSearch.offers) || []);
+function refresh() {
+  applyRadius(); render(); renderStores();
   syncRunner();
   checkWatch();
 }
@@ -202,6 +221,7 @@ async function checkWatch() {
     try { const r = await watchSearch(term, S.loc, httpGet); watchHits[term] = r; reports = r.report; }
     catch (e) { watchHits[term] = { error: (e && e.message) || String(e) }; }
     renderWatch(); renderDiag();
+    ensureStores(shownOffers());
   }
 }
 async function runSearch(q) {
@@ -212,6 +232,7 @@ async function runSearch(q) {
   for (const o of offers) o.rank = matchLevel(o, q); // offers naming the term come first
   lastSearch = { q, offers };
   renderResults(); renderDiag();
+  ensureStores(offers);
   if (!r.offers.length && r.report.every(x => x.error || !x.found)) toast("Die Angebotsquellen haben keine Daten geliefert – siehe Quellen-Status in den Einstellungen.");
 }
 
@@ -231,7 +252,8 @@ async function syncRunner() {
   if (!BR) return;
   const chains = {};
   for (const s of stores) if (!chains[s.chain]) chains[s.chain] = { km: s.km };
-  try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, loc: S.loc, chains } }); } catch (e) { /* runner not ready */ }
+  const far = Object.keys(S.stores).filter(c => known(c) && !chains[c]); // chains known to have no store in the radius
+  try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, loc: S.loc, chains, far } }); } catch (e) { /* runner not ready */ }
 }
 
 /* ---------- in-app updates (Android app only) ---------- */
@@ -303,26 +325,27 @@ document.addEventListener("visibilitychange", () => { if (!document.hidden && !U
 $("search").addEventListener("submit", e => { e.preventDefault(); const q = $("q").value.trim(); if (q) { $("q").blur(); runSearch(q); } });
 $("q").addEventListener("search", () => { if (!$("q").value) { lastSearch = null; renderResults(); } });
 $("radius").addEventListener("input", () => { S.radius = +$("radius").value; $("rv").textContent = S.radius + " km"; });
-$("radius").addEventListener("change", () => { save(); applyRadius(); render(); renderStores(); syncRunner(); });
+$("radius").addEventListener("change", () => { save(); applyRadius(); render(); renderStores(); syncRunner(); ensureStores(shownOffers()); });
 $("loc").addEventListener("click", () => $("locdlg").showModal());
 $("gps").addEventListener("click", useGps);
 $("placego").addEventListener("click", usePlace);
 $("place").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); usePlace(); } });
-$("stores").addEventListener("click", e => { if (e.target.id === "retry") refresh(); });
 $("watch").addEventListener("click", e => {
   const d = e.target.dataset.del;
-  if (d != null) { delete watchHits[S.watch[+d]]; S.watch.splice(+d, 1); save(); renderWatch(); syncRunner(); }
+  if (d != null) { e.preventDefault(); delete watchHits[S.watch[+d]]; delete S.open[S.watch[+d]]; S.watch.splice(+d, 1); save(); renderWatch(); syncRunner(); }
 });
+// Remember which products are unfolded ("toggle" does not bubble, hence the capture listener).
+$("watch").addEventListener("toggle", e => { const t = e.target.dataset && e.target.dataset.term; if (t) { S.open[t] = e.target.open; save(); } }, true);
 $("watch").addEventListener("change", async e => {
   if (e.target.id !== "notify") return;
   S.notify = e.target.checked && (await ensurePerm());
   e.target.checked = S.notify; save(); syncRunner();
-  if (S.notify) toast("Du wirst benachrichtigt, sobald ein beobachtetes Produkt im Angebot ist.");
+  if (S.notify) toast("Du bekommst höchstens einmal am Tag eine Meldung, wenn es ein neues Angebot gibt.");
 });
 $("watch").addEventListener("submit", e => {
   e.preventDefault();
   const v = $("wq").value.trim();
-  if (v && S.watch.indexOf(v) < 0) { S.watch.push(v); save(); renderWatch(); syncRunner(); checkWatch(); }
+  if (v && S.watch.indexOf(v) < 0) { S.watch.push(v); S.open[v] = true; save(); renderWatch(); syncRunner(); checkWatch(); }
 });
 
 refresh();

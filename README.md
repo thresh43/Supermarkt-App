@@ -8,6 +8,6 @@ Android-App, die Supermarkt-Angebote im Umkreis zeigt: Produktsuche, einstellbar
 - `android/` – Capacitor-Android-Projekt
 - `.github/workflows/apk.yml` – baut bei jedem Push auf `main` die APK und veröffentlicht sie als Release
 
-Datenquellen: Angebote aus den öffentlichen Produktseiten von kaufDA und MeinProspekt (`SOURCES` in `src/lib.js`), Märkte und Adressen aus OpenStreetMap (Overpass, Nominatim).
+Datenquellen: Angebote aus den öffentlichen Produktseiten von kaufDA und MeinProspekt (`SOURCES` in `src/lib.js`), Märkte und Adressen aus OpenStreetMap (Nominatim).
 
 Tests: `npm test`

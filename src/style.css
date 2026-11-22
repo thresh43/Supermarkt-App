@@ -56,3 +56,11 @@ body.settings #tools,body.settings #loc{display:none}body.settings .bar{margin-b
 .block{width:100%;margin-top:12px;padding:12px}
 #toast{bottom:calc(env(safe-area-inset-bottom) + 68px)}
 [hidden]{display:none!important}
+.fold{border-bottom:1px solid var(--line);margin-bottom:10px}
+.fold summary{display:flex;align-items:center;gap:10px;padding:10px 0;list-style:none;cursor:pointer}
+.fold summary::-webkit-details-marker{display:none}
+.fold summary b{flex:1;min-width:0;overflow-wrap:anywhere}
+.arrow{width:8px;height:8px;border-right:2px solid var(--muted);border-bottom:2px solid var(--muted);transform:rotate(-45deg);transition:transform .15s;flex:none;margin:0 4px}
+.fold[open] .arrow{transform:rotate(45deg)}
+.tag.none{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.x{padding:4px 8px}
