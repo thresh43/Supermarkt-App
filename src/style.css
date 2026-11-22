@@ -40,12 +40,19 @@ a{color:inherit}
 .switch{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted)}
 .switch input{width:18px;height:18px;accent-color:var(--accent)}
 .head{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}.head h2{margin:0}
-details{font-size:13px;color:var(--muted)}details div{margin-top:8px;overflow-wrap:anywhere}
+#diag-body{overflow-wrap:anywhere}#diag-body div+div{margin-top:8px}
 dialog{border:1px solid var(--line);border-radius:16px;background:var(--card);color:var(--text);width:min(92vw,380px);padding:18px}
 dialog::backdrop{background:rgba(0,0,0,.5)}
 dialog form{display:grid;gap:10px}dialog h2{font-size:16px;color:var(--text);text-transform:none;letter-spacing:0}
 #toast{position:fixed;left:16px;right:16px;bottom:calc(env(safe-area-inset-bottom) + 16px);background:var(--text);color:var(--bg);padding:10px 14px;border-radius:10px;font-size:14px;z-index:20;text-align:center}
 .spin{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:s .7s linear infinite;vertical-align:-2px;margin-right:6px}
 @keyframes s{to{transform:rotate(360deg)}}
-footer{display:flex;justify-content:space-between;align-items:center;gap:10px}footer:empty{display:none}
 button:disabled{opacity:.6}
+main{padding-bottom:calc(env(safe-area-inset-bottom) + 76px)}
+.tabs{position:fixed;left:0;right:0;bottom:0;z-index:6;display:flex;background:var(--card);border-top:1px solid var(--line);padding-bottom:env(safe-area-inset-bottom)}
+.tabs button{flex:1;border:0;background:transparent;padding:14px 8px;font-weight:600;color:var(--muted);border-top:2px solid transparent}
+.tabs button.on{color:var(--accent);border-top-color:var(--accent)}
+body.settings #tools,body.settings #loc{display:none}body.settings .bar{margin-bottom:0}
+.block{width:100%;margin-top:12px;padding:12px}
+#toast{bottom:calc(env(safe-area-inset-bottom) + 68px)}
+[hidden]{display:none!important}

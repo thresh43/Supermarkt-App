@@ -212,7 +212,7 @@ async function runSearch(q) {
   for (const o of offers) o.rank = matchLevel(o, q); // offers naming the term come first
   lastSearch = { q, offers };
   renderResults(); renderDiag();
-  if (!r.offers.length && r.report.every(x => x.error || !x.found)) toast("Die Angebotsquellen haben keine Daten geliefert – siehe Quellen-Status.");
+  if (!r.offers.length && r.report.every(x => x.error || !x.found)) toast("Die Angebotsquellen haben keine Daten geliefert – siehe Quellen-Status in den Einstellungen.");
 }
 
 /* ---------- notifications ---------- */
@@ -238,15 +238,21 @@ async function syncRunner() {
 // Every push to main builds a GitHub release; the app compares its build number with the latest one.
 const REPO = "thresh43/Supermarkt-App";
 const Updater = plugin("AppUpdater");
-const UPD = { current: "", code: 0, avail: null, busy: false };
+const UPD = { current: "", code: 0, latest: "", avail: null, busy: false, status: "" };
 function renderUpdate() {
   $("update").innerHTML = UPD.avail ? `<div class="card"><div class="row"><div><div class="t">Update verfügbar</div>
     <div class="sub">Version ${esc(UPD.avail.name)} · deine Einstellungen bleiben erhalten</div></div>
     <button class="primary" id="doupdate" ${UPD.busy ? "disabled" : ""}>${UPD.busy ? "Lädt …" : "Aktualisieren"}</button></div></div>` : "";
-  $("about").innerHTML = Updater ? `<span class="sub">Version ${esc(UPD.current || "?")}</span><button class="ghost" id="checkupdate">Nach Updates suchen</button>` : "";
+  $("about").innerHTML = `<h2>App</h2><div class="card">
+    <div class="row"><span>Installierte Version</span><b>${esc(UPD.current || (Updater ? "…" : "Vorschau"))}</b></div>
+    <div class="row"><span>Neueste Version</span><b>${esc(UPD.latest || "–")}</b></div>
+    <button class="primary block" id="updatenow" ${UPD.busy || !Updater ? "disabled" : ""}>${UPD.busy ? "Bitte warten …" : UPD.avail ? "Auf Version " + esc(UPD.avail.name) + " aktualisieren" : "Nach Update suchen und installieren"}</button>
+    <p class="muted">${esc(UPD.status || (Updater ? "Sucht die neueste Version und installiert sie direkt. Deine Einstellungen bleiben erhalten." : "Updates gibt es nur in der installierten Android-App."))}</p></div>`;
 }
-async function checkUpdate(manual) {
-  if (!Updater) return;
+// Returns true when the check itself worked.
+async function checkUpdate() {
+  if (!Updater) return false;
+  let ok = true;
   try {
     const v = await Updater.getVersion();
     UPD.current = v.versionName; UPD.code = +v.versionCode;
@@ -255,23 +261,43 @@ async function checkUpdate(manual) {
     const rel = await res.json();
     const n = +String(rel.tag_name || "").split(".").pop();
     const asset = (rel.assets || []).find(a => /\.apk$/i.test(a.name));
-    UPD.avail = n > UPD.code && asset ? { name: String(rel.tag_name).replace(/^v/, ""), url: asset.browser_download_url } : null;
-    if (manual) toast(UPD.avail ? "Neue Version gefunden." : "Du hast die neueste Version (" + UPD.current + ").");
-  } catch (e) { if (manual) toast("Update-Prüfung fehlgeschlagen (" + ((e && e.message) || e) + ")."); }
+    UPD.latest = String(rel.tag_name || "").replace(/^v/, "");
+    UPD.avail = n > UPD.code && asset ? { name: UPD.latest, url: asset.browser_download_url } : null;
+  } catch (e) { ok = false; UPD.status = "Update-Prüfung fehlgeschlagen (" + ((e && e.message) || e) + ")."; }
   renderUpdate();
+  return ok;
 }
 async function doUpdate() {
   if (!UPD.avail || UPD.busy) return;
-  UPD.busy = true; renderUpdate();
+  UPD.busy = true; UPD.status = "Version " + UPD.avail.name + " wird heruntergeladen …"; renderUpdate();
   try {
     const r = await Updater.downloadAndInstall({ url: UPD.avail.url });
-    if (r.status === "permission") toast("Bitte die Installation aus dieser App erlauben und dann erneut auf Aktualisieren tippen.");
-  } catch (e) { toast((e && e.message) || "Update fehlgeschlagen."); }
+    UPD.status = r.status === "permission" ? "Bitte erlaube die Installation aus dieser App und tippe danach erneut auf Aktualisieren."
+      : "Download fertig – bestätige die Installation im Android-Dialog.";
+  } catch (e) { UPD.status = (e && e.message) || "Update fehlgeschlagen."; }
   UPD.busy = false; renderUpdate();
 }
+// The settings button does both steps: look for a newer version and install it right away.
+async function updateNow() {
+  if (UPD.busy) return;
+  UPD.busy = true; UPD.status = "Suche nach Updates …"; renderUpdate();
+  const ok = await checkUpdate();
+  UPD.busy = false;
+  if (UPD.avail) return doUpdate();
+  if (ok) UPD.status = "Du hast bereits die neueste Version.";
+  renderUpdate();
+}
 $("update").addEventListener("click", e => { if (e.target.id === "doupdate") doUpdate(); });
-$("about").addEventListener("click", e => { if (e.target.id === "checkupdate") checkUpdate(true); });
-document.addEventListener("visibilitychange", () => { if (!document.hidden) checkUpdate(false); });
+$("about").addEventListener("click", e => { if (e.target.id === "updatenow") updateNow(); });
+document.querySelector(".tabs").addEventListener("click", e => {
+  const tab = e.target.dataset.tab;
+  if (!tab) return;
+  for (const b of document.querySelectorAll(".tabs button")) b.classList.toggle("on", b === e.target);
+  $("view-offers").hidden = tab !== "offers"; $("view-settings").hidden = tab !== "settings";
+  document.body.classList.toggle("settings", tab === "settings");
+  scrollTo(0, 0);
+});
+document.addEventListener("visibilitychange", () => { if (!document.hidden && !UPD.busy) checkUpdate(); });
 
 /* ---------- events ---------- */
 $("search").addEventListener("submit", e => { e.preventDefault(); const q = $("q").value.trim(); if (q) { $("q").blur(); runSearch(q); } });
@@ -300,4 +326,5 @@ $("watch").addEventListener("submit", e => {
 });
 
 refresh();
-checkUpdate(false);
+renderUpdate();
+checkUpdate();

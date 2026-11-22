@@ -13,6 +13,7 @@
     <h1>Angebotsradar</h1>
     <button id="loc" class="chip" type="button">Standort wählen</button>
   </div>
+  <div id="tools">
   <form id="search" class="search">
     <input id="q" type="search" placeholder="Produkt suchen, z. B. Butter" autocomplete="off" enterkeyhint="search">
     <button type="submit">Suchen</button>
@@ -21,15 +22,22 @@
     <span>Umkreis <b id="rv"></b></span>
     <input id="radius" type="range" min="1" max="25" step="1">
   </label>
+  </div>
 </header>
-<main>
+<main id="view-offers">
   <section id="update"></section>
   <section id="watch"></section>
   <section id="results"></section>
   <section id="stores"></section>
-  <details id="diag"><summary>Quellen-Status</summary><div id="diag-body"></div></details>
-  <footer id="about"></footer>
 </main>
+<main id="view-settings" hidden>
+  <section id="about"></section>
+  <section><h2>Quellen-Status</h2><div class="card sub" id="diag-body"></div></section>
+</main>
+<nav class="tabs">
+  <button type="button" data-tab="offers" class="on">Angebote</button>
+  <button type="button" data-tab="settings">Einstellungen</button>
+</nav>
 <dialog id="locdlg">
   <form method="dialog">
     <h2>Standort</h2>
