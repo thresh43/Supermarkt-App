@@ -7,8 +7,9 @@ const LN = plugin("LocalNotifications"), BR = plugin("BackgroundRunner"), GEO = 
 const RUNNER = "de.tobi.angebotsradar.watch";
 const UA = { "User-Agent": "Angebotsradar/0.1 (private Android app)" };
 
-const S = Object.assign({ loc: null, radius: 5, watch: ["Monster Ultra White"], notify: false, stores: null },
+const S = Object.assign({ loc: null, radius: 5, watch: ["Monster Energy Ultra White"], notify: false, stores: null },
   JSON.parse(localStorage.getItem("state") || "{}"));
+if (S.watch[0] === "Monster Ultra White") S.watch[0] = "Monster Energy Ultra White"; // first releases used a term the sources do not know
 const save = () => localStorage.setItem("state", JSON.stringify(S));
 let stores = [];          // stores inside the radius, nearest first
 let lastSearch = null;    // { q, offers }
@@ -20,7 +21,15 @@ const km = d => d.toFixed(d < 10 ? 1 : 0).replace(".", ",") + " km";
 let toastTimer;
 function toast(msg) { const t = $("toast"); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => (t.hidden = true), 3500); }
 
-async function httpGet(url) {
+// The sources localize their pages through a cookie. Browsers do not let fetch() set one, so the
+// app calls the native HTTP plugin directly.
+async function httpGet(url, cookie) {
+  const headers = { Accept: "text/html" };
+  if (cookie) headers.Cookie = cookie;
+  if (isNative && Cap.Plugins && Cap.Plugins.CapacitorHttp) {
+    const r = await Cap.Plugins.CapacitorHttp.request({ url, method: "GET", headers, responseType: "text" });
+    return { status: r.status, text: typeof r.data === "string" ? r.data : JSON.stringify(r.data) };
+  }
   const res = await fetch(url, { headers: { Accept: "text/html" } });
   return { status: res.status, text: await res.text() };
 }
@@ -67,13 +76,22 @@ function setLocation(loc) {
   refresh();
 }
 
+const OVERPASS = ["https://overpass-api.de/api/interpreter", "https://overpass.private.coffee/api/interpreter", "https://overpass.kumi.systems/api/interpreter"];
 // All shops within 25 km are fetched once per location and cached for a day; the radius filters locally.
 async function loadStores() {
   const c = S.stores;
   if (c && Date.now() - c.at < 864e5) return c.list;
   const q = `[out:json][timeout:25];nwr["shop"~"^(supermarket|convenience|beverages|chemist|wholesale)$"](around:25000,${S.loc.lat},${S.loc.lon});out center tags;`;
-  const res = await fetch("https://overpass-api.de/api/interpreter", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(q) });
-  if (!res.ok) throw new Error("HTTP " + res.status);
+  // Public Overpass servers are sometimes overloaded, so try the mirrors in turn.
+  let res = null, err = null;
+  for (const host of OVERPASS) {
+    try {
+      res = await fetch(host, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: "data=" + encodeURIComponent(q) });
+      if (res.ok) break;
+      err = new Error("HTTP " + res.status); res = null;
+    } catch (e) { err = e; }
+  }
+  if (!res) throw err;
   const list = [];
   for (const e of (await res.json()).elements || []) {
     const t = e.tags || {}, lat = e.lat != null ? e.lat : e.center && e.center.lat, lon = e.lon != null ? e.lon : e.center && e.center.lon;
@@ -100,9 +118,9 @@ function validity(o) {
 function offerCard(o, note) {
   const st = nearest(o.chain), v = validity(o);
   const img = o.image ? `<img src="${esc(o.image)}" alt="" loading="lazy">` : `<div class="ph">%</div>`;
-  const sub = [o.brand && fold(o.title).indexOf(fold(o.brand)) < 0 ? o.brand : "", o.desc].filter(Boolean).join(" · ");
+  const title = o.brand && fold(o.title).indexOf(fold(o.brand)) < 0 ? o.brand + " " + o.title : o.title, sub = o.desc;
   return `<article class="card offer">${img}
-    <div><div class="t">${esc(o.title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>
+    <div><div class="t">${esc(title)}</div>${sub ? `<div class="sub">${esc(sub)}</div>` : ""}</div>
     <div class="price">${fmtPrice(o.price)}${o.oldPrice && o.oldPrice > o.price ? `<s>${fmtPrice(o.oldPrice)}</s>` : ""}</div>
     <div class="meta"><span class="tag">${esc(o.retailer)}</span><span class="tag${v.soon ? " warn" : ""}">${esc(v.text)}</span>
       ${note ? `<span class="tag warn">${esc(note)}</span>` : ""}
@@ -115,7 +133,7 @@ function offerCard(o, note) {
 // Offers at chains with a store in the radius, nearest store first. Without a location everything is shown.
 function inRadius(list) {
   if (!S.loc) return list.slice();
-  return list.filter(o => nearest(o.chain)).sort((a, b) => nearest(a.chain).km - nearest(b.chain).km || a.price - b.price);
+  return list.filter(o => nearest(o.chain)).sort((a, b) => (b.rank || 0) - (a.rank || 0) || nearest(a.chain).km - nearest(b.chain).km || a.price - b.price);
 }
 
 function renderWatch() {
@@ -155,7 +173,7 @@ function renderStores(error) {
 }
 function renderDiag() {
   $("diag-body").innerHTML = reports.length ? reports.map(r =>
-    `<div>${esc(r.source)}: ${r.error ? "Fehler – " + esc(r.error) : r.found + " Angebote gelesen"}<br><span class="sub">${esc(r.url)}</span></div>`).join("")
+    `<div>${esc(r.source)}: ${r.error ? "Fehler – " + esc(r.error) : r.found + " Angebote gelesen" + (r.place ? " für " + esc(r.place) : "")}<br><span class="sub">${esc(r.url)}</span></div>`).join("")
     : "Noch keine Abfrage.";
 }
 function render() {
@@ -181,16 +199,17 @@ async function refresh() {
 }
 async function checkWatch() {
   for (const term of S.watch) {
-    try { const r = await watchSearch(term, S.loc ? S.loc.zip : "", httpGet); watchHits[term] = r; reports = r.report; }
+    try { const r = await watchSearch(term, S.loc, httpGet); watchHits[term] = r; reports = r.report; }
     catch (e) { watchHits[term] = { error: (e && e.message) || String(e) }; }
     renderWatch(); renderDiag();
   }
 }
 async function runSearch(q) {
   lastSearch = { q, loading: true }; renderResults();
-  const r = await searchOffers(q, S.loc ? S.loc.zip : "", httpGet);
+  const r = await searchOffers(q, S.loc, httpGet);
   reports = r.report;
-  const offers = r.offers.filter(o => matchLevel(o, q) > 0).sort((a, b) => matchLevel(b, q) - matchLevel(a, q));
+  const offers = r.offers.filter(o => o.full || matchLevel(o, q) > 0);
+  for (const o of offers) o.rank = matchLevel(o, q); // offers naming the term come first
   lastSearch = { q, offers };
   renderResults(); renderDiag();
   if (!r.offers.length && r.report.every(x => x.error || !x.found)) toast("Die Angebotsquellen haben keine Daten geliefert – siehe Quellen-Status.");
@@ -212,7 +231,7 @@ async function syncRunner() {
   if (!BR) return;
   const chains = {};
   for (const s of stores) if (!chains[s.chain]) chains[s.chain] = { km: s.km };
-  try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, zip: S.loc ? S.loc.zip : "", chains } }); } catch (e) { /* runner not ready */ }
+  try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, loc: S.loc, chains } }); } catch (e) { /* runner not ready */ }
 }
 
 /* ---------- in-app updates (Android app only) ---------- */

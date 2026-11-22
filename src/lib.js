@@ -1,11 +1,27 @@
 // Shared logic for the app and the background runner. No DOM, no imports:
 // build-web.js inlines this file into both bundles.
 
-// Offer sources: public search pages of offer aggregators. `url` builds the page for a search term.
+// Offer sources: kaufDA and MeinProspekt (both Bonial). They have one page per product keyword
+// ("/Angebote/Monster-Energy") and localize it through a "location" cookie. `order` says which of
+// the three text lines of an offer card is the retailer, the brand and the product name.
+const cap = w => w.charAt(0).toUpperCase() + w.slice(1);
 const SOURCES = [
-  { id: "marktguru", name: "marktguru", url: (q, zip) => "https://www.marktguru.de/search/" + encodeURIComponent(q) + (zip ? "?zipCode=" + zip : "") },
-  { id: "kaufda", name: "kaufDA", url: (q, zip) => "https://www.kaufda.de/Angebote/" + encodeURIComponent(q) + (zip ? "?zip=" + zip : "") },
+  { id: "kaufda", name: "kaufDA", order: { brand: 0, title: 1, retailer: 2 },
+    url: (words, variant) => "https://www.kaufda.de/Angebote/" + (variant ? cap(words.join("-")) : words.map(cap).join("-")), variants: 2 },
+  { id: "meinprospekt", name: "MeinProspekt", order: { retailer: 0, brand: 1, title: 2 },
+    url: words => "https://www.meinprospekt.de/angebote/" + words.join("-"), variants: 1 },
 ];
+
+// "Käse Aufschnitt" -> ["kaese", "aufschnitt"]
+function slugWords(q) {
+  return String(q).toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
+    .normalize("NFD").replace(/[\u0300-\u036f]/g, "").split(/[^a-z0-9]+/).filter(Boolean);
+}
+function locationCookie(loc) {
+  if (!loc) return "";
+  const city = String(loc.city || loc.label || "").replace(/^\d{5}\s*/, "");
+  return "location=" + encodeURIComponent(JSON.stringify({ city, cityDisplayName: city, countryCode: "DE", lat: loc.lat, lng: loc.lon, zip: loc.zip || "" }));
+}
 
 // Known chains: [key, display name, pattern on the folded name]
 const CHAINS = [
@@ -35,133 +51,82 @@ function chainOf(name) {
 }
 
 function decodeEntities(s) {
-  return String(s).replace(/&quot;/g, '"').replace(/&#0?39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&");
+  return String(s).replace(/&quot;/g, '"').replace(/&#x27;|&#0?39;|&apos;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").replace(/&amp;/g, "&");
 }
 function num(v) {
   if (typeof v === "number") return isFinite(v) ? v : null;
   if (typeof v !== "string") return null;
-  const m = /-?\d+(?:[.,]\d+)?/.exec(v.replace(/\.(?=\d{3}\b)/g, ""));
+  const m = /\d+(?:[.,]\d+)?/.exec(v.replace(/\.(?=\d{3}\b)/g, ""));
   return m ? parseFloat(m[0].replace(",", ".")) : null;
 }
-function str(v) {
-  if (typeof v === "string") return v.trim();
-  if (typeof v === "number") return String(v);
-  if (v && typeof v === "object" && !Array.isArray(v)) return str(v.name || v.title || v.label || "");
-  return "";
-}
-function first(o, keys) {
-  for (const k of keys) if (o[k] != null && o[k] !== "") return o[k];
-  return null;
-}
-function toDate(v) {
-  if (v == null || v === "") return null;
-  if (typeof v === "number") v = v < 1e11 ? v * 1000 : v;
-  const d = new Date(v);
-  return isNaN(d.getTime()) ? null : d.toISOString();
-}
-
-// Collect every JSON document embedded in a page: JSON-LD, framework state blobs, inline assignments.
-function jsonBlobs(html) {
-  const out = [];
-  const re = /<script\b([^>]*)>([\s\S]*?)<\/script>/gi;
-  let m;
-  while ((m = re.exec(html))) {
-    const attrs = m[1], body = m[2].trim();
-    if (!body || /\bsrc\s*=/.test(attrs)) continue;
-    let text = null;
-    if (/json/i.test(attrs)) text = body;
-    else {
-      const a = /=\s*([{[][\s\S]*[}\]])\s*;?\s*$/.exec(body);
-      if (a && /price|preis/i.test(a[1])) text = a[1];
-    }
-    if (!text) continue;
-    try { out.push(JSON.parse(text)); } catch (e) {
-      try { out.push(JSON.parse(decodeEntities(text))); } catch (e2) { /* not JSON */ }
-    }
-  }
-  return out;
-}
-
-const NAME_KEYS = ["name", "title", "productName", "headline"];
-const PRICE_KEYS = ["price", "salesPrice", "currentPrice", "offerPrice", "lowPrice", "priceValue"];
-const OLD_KEYS = ["oldPrice", "referencePrice", "regularPrice", "originalPrice", "strikePrice", "highPrice"];
-const SELLER_KEYS = ["seller", "advertiser", "retailer", "merchant", "publisher", "store", "offeredBy", "shop"];
-const FROM_KEYS = ["validFrom", "priceValidFrom", "startDate", "validFromDate", "from", "dateFrom"];
-const TO_KEYS = ["validThrough", "priceValidUntil", "validUntil", "validTo", "endDate", "validToDate", "to", "dateTo"];
-
-function sellerOf(o) {
-  let v = first(o, SELLER_KEYS);
-  if (v == null && Array.isArray(o.advertisers)) v = o.advertisers[0];
-  if (v == null && Array.isArray(o.retailers)) v = o.retailers[0];
-  if (Array.isArray(v)) v = v[0];
-  return str(v);
-}
-function validityOf(o) {
-  let from = toDate(first(o, FROM_KEYS)), to = toDate(first(o, TO_KEYS));
-  const list = o.validityDates || o.validity || o.validityPeriods;
-  const arr = Array.isArray(list) ? list : list && typeof list === "object" ? [list] : [];
-  if (arr.length) {
-    from = from || toDate(first(arr[0], FROM_KEYS));
-    to = to || toDate(first(arr[arr.length - 1], TO_KEYS));
-  }
-  return { from, to };
-}
-function imageOf(o) {
-  let v = first(o, ["image", "imageUrl", "thumbnail", "thumbnailUrl", "picture"]);
-  if (Array.isArray(v)) v = v[0];
-  if (v && typeof v === "object") v = v.url || v.contentUrl || v.src;
-  return typeof v === "string" && /^https?:/.test(v) ? v : "";
-}
-
-// Walk any JSON tree and collect things that look like a priced offer from a retailer.
-function collectOffers(node, ctx, out, depth) {
-  if (!node || typeof node !== "object" || depth > 40) return;
-  if (Array.isArray(node)) { for (const x of node) collectOffers(x, ctx, out, depth + 1); return; }
-  const seller = sellerOf(node) || ctx.seller;
-  const name = str(first(node, NAME_KEYS)) || str(node.product) || ctx.name;
-  const brand = str(node.brand) || str(node.product && node.product.brand) || ctx.brand;
-  const nested = node.offers && typeof node.offers === "object";
-  let price = num(first(node, PRICE_KEYS));
-  if (price == null && node.price && typeof node.price === "object") price = num(first(node.price, ["value", "amount", "price"]));
-  if (price != null && price > 0 && name && seller && !nested) {
-    const v = validityOf(node);
-    const desc = str(node.description) || ctx.desc;
-    out.push({
-      title: name, brand, desc: desc === name ? "" : desc, price,
-      oldPrice: num(first(node, OLD_KEYS)), retailer: seller,
-      from: v.from || ctx.from, to: v.to || ctx.to,
-      image: imageOf(node) || ctx.image, url: typeof node.url === "string" && /^https?:/.test(node.url) ? node.url : "",
-    });
-  }
-  const v = validityOf(node);
-  const next = {
-    seller, name, brand, desc: str(node.description) || ctx.desc,
-    from: v.from || ctx.from, to: v.to || ctx.to, image: imageOf(node) || ctx.image,
-  };
-  for (const k in node) if (node[k] && typeof node[k] === "object") collectOffers(node[k], next, out, depth + 1);
-}
-
+function endOfDay(isoDate) { return isoDate ? isoDate.slice(0, 10) + "T23:59:59" : null; }
 function hash(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
 
-// Parse one page into normalized, de-duplicated offers that are still valid.
+// Validity per chain. The pages state it per flyer, not per offer: in the flyer cards
+// ("Mo. 23.11. - Sa. 28.11.2026") and, less precisely, in the structured data.
+function validityByChain(html) {
+  const map = {};
+  const put = (name, from, to) => {
+    const c = chainOf(name);
+    if (c && to && !map[c.key]) map[c.key] = { from: from || null, to: endOfDay(to) };
+  };
+  const walk = n => {
+    if (!n || typeof n !== "object") return;
+    if (Array.isArray(n)) return n.forEach(walk);
+    const who = n.seller || n.performer, to = n.priceValidUntil || n.endDate;
+    if (who && who.name && typeof to === "string") put(who.name, typeof n.startDate === "string" ? n.startDate : null, to);
+    for (const k in n) walk(n[k]);
+  };
+  const range = "[^<]*?(\\d\\d)\\.(\\d\\d)\\. - [^<]*?(\\d\\d)\\.(\\d\\d)\\.(\\d{4})<";
+  const cards = [
+    new RegExp("<p[^>]*>([^<]{2,60})</p>(?:<p[^>]*>[^<]*</p>)?<p[^>]*>" + range, "g"),          // MeinProspekt
+    new RegExp(" bei ([^<]{2,60})</div><div[^>]*><div[^>]*>[^<]*</div><div[^>]*>" + range, "g"), // kaufDA
+  ];
+  let m;
+  for (const card of cards) while ((m = card.exec(html))) {
+    const fromYear = +m[3] > +m[5] ? +m[6] - 1 : +m[6];
+    put(decodeEntities(m[1]), fromYear + "-" + m[3] + "-" + m[2], m[6] + "-" + m[5] + "-" + m[4]);
+  }
+  // Fallback for chains without a flyer card on the page.
+  const ld = /<script[^>]*application\/ld\+json[^>]*>([\s\S]*?)<\/script>/g;
+  while ((m = ld.exec(html))) { try { walk(JSON.parse(m[1])); } catch (e) { /* skip broken block */ } }
+  return map;
+}
+
+// "Monster Energy" + "Energy Drink" and "Monster" + "Energy-Drink" are the same product.
+function nameKey(brand, title) {
+  return fold(brand + " " + title).split(" ").filter((w, i, a) => a.indexOf(w) === i).sort().join(" ");
+}
+
+// Parse the offer cards of one page into normalized offers.
 function extractOffers(html, source, pageUrl) {
-  const raw = [];
-  for (const blob of jsonBlobs(html)) collectOffers(blob, {}, raw, 0);
-  const seen = {}, out = [], now = Date.now();
-  for (const o of raw) {
-    if (o.to) {
-      // A date without a time means "until the end of that day".
-      const end = new Date(o.to);
-      if (end.getUTCHours() === 0 && end.getUTCMinutes() === 0) end.setTime(end.getTime() + 86399000);
-      o.to = end.toISOString();
-      if (end.getTime() < now) continue;
-    }
-    const chain = chainOf(o.retailer);
-    if (!chain) continue;
-    const key = [fold(o.title), chain.key, o.price, (o.to || "").slice(0, 10)].join("|");
+  const body = html.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<svg[\s\S]*?<\/svg>/g, "");
+  const grid = /id="OfferGrid"[\s\S]*?<\/section>/.exec(body);
+  if (!grid) return [];
+  const valid = validityByChain(html), seen = {}, out = [], now = Date.now();
+  for (const item of grid[0].split('role="listitem"').slice(1)) {
+    const lines = [];
+    const re = /<p[^>]*>([^<]*)<\/p>/g;
+    let m;
+    while ((m = re.exec(item))) lines.push(decodeEntities(m[1]).trim());
+    const priceLine = lines.slice(3).find(l => /\d\s*€/.test(l));
+    const price = priceLine ? num(priceLine) : null;
+    const chain = chainOf(lines[source.order.retailer]);
+    const title = lines[source.order.title], brand = lines[source.order.brand] || "";
+    if (!chain || !title || price == null) continue;
+    const v = valid[chain.key] || {};
+    if (v.to && new Date(v.to).getTime() < now) continue;
+    const key = [nameKey(brand, title), chain.key, price].join("|");
     if (seen[key]) continue;
     seen[key] = 1;
-    out.push(Object.assign(o, { id: hash(key), chain: chain.key, retailer: chain.label, source: source.name, url: o.url || pageUrl }));
+    const unit = lines.slice(3).find(l => /=|\/\s*(l|kg)/.test(l) && l !== priceLine) || "";
+    const uvp = /UVP<\/span><span[^>]*>([^<]*)</.exec(item);
+    const img = /<img[^>]*\ssrc="(https?:[^"]+)"/.exec(item);
+    out.push({
+      id: hash(key + "|" + (v.to || "")), title, brand, desc: unit.replace(/^\(|\)$/g, ""), price, oldPrice: uvp ? num(uvp[1]) : null,
+      from: v.from || null, to: v.to || null, chain: chain.key, retailer: chain.label,
+      image: img ? decodeEntities(img[1]) : "", source: source.name, url: pageUrl,
+    });
   }
   return out;
 }
@@ -175,27 +140,36 @@ function matchLevel(offer, query) {
   for (const w of words) if (hay.indexOf(w) >= 0) hit++;
   return hit === words.length ? 2 : hit > 0 ? 1 : 0;
 }
-// Flyers often advertise a whole range ("versch. Sorten") without naming the variant.
-function isAssortment(offer) {
-  return /versch|sorten|alle varianten|div\b|je \d/.test(fold([offer.title, offer.desc].join(" ")).replace(/ /g, " "));
-}
-
-// Fetch all sources for one term. Returns { offers, report } - report says what each source delivered.
-async function searchOffers(query, zip, httpGet) {
-  const offers = [], report = [], seen = {};
+// Fetch all sources for one term. A source only knows keyword pages, so the term is tried as a
+// whole first and then shortened ("monster ultra white" -> "monster ultra" -> "monster").
+// Returns { offers, report } - report says what each source delivered.
+async function searchOffers(query, loc, httpGet) {
+  const words = slugWords(query), offers = [], report = [], seen = {};
+  const cookie = locationCookie(loc);
   for (const src of SOURCES) {
-    const url = src.url(query, zip);
-    const entry = { source: src.name, url, status: 0, found: 0, error: "" };
+    const entry = { source: src.name, url: "", status: 0, found: 0, error: "", place: "" };
     try {
-      const res = await httpGet(url);
-      entry.status = res.status;
-      if (res.status >= 200 && res.status < 300) {
-        for (const o of extractOffers(res.text, src, url)) {
+      let page = null;
+      for (let n = words.length; n > 0 && !page; n = n > 2 ? 2 : n - 1) {
+        for (let variant = 0; variant < (n > 1 ? src.variants : 1) && !page; variant++) {
+          entry.url = src.url(words.slice(0, n), variant);
+          const res = await httpGet(entry.url, cookie);
+          entry.status = res.status;
+          if (res.status >= 200 && res.status < 300) page = { text: res.text, full: n === words.length };
+          else if (res.status !== 404) throw new Error("HTTP " + res.status);
+        }
+      }
+      if (!page) entry.error = "kein Treffer für diesen Begriff";
+      else {
+        const place = /"city":"([^"]*)"[^{}]*?"zip":"([^"]*)"/.exec(page.text);
+        entry.place = place ? place[2] + " " + place[1] : "";
+        for (const o of extractOffers(page.text, src, entry.url)) {
           entry.found++;
-          const k = [fold(o.title), o.chain, o.price].join("|");
+          o.full = page.full;
+          const k = [nameKey(o.brand, o.title), o.chain, o.price].join("|");
           if (!seen[k]) { seen[k] = 1; offers.push(o); }
         }
-      } else entry.error = "HTTP " + res.status;
+      }
     } catch (e) { entry.error = String((e && e.message) || e); }
     report.push(entry);
   }
@@ -208,26 +182,20 @@ function distanceKm(aLat, aLon, bLat, bLon) {
   return 12742 * Math.asin(Math.sqrt(h));
 }
 
-// Search for a watched product. `exact` names the product; `maybe` is a range offer of the same
-// brand ("Monster Energy, versch. Sorten") where the variant has to be checked in the store.
-async function watchSearch(term, zip, httpGet) {
+// Search for a watched product. `exact` names the product in full; `maybe` is an offer of the
+// same brand where the flyer does not name the variant, so it has to be checked in the store.
+async function watchSearch(term, loc, httpGet) {
   const words = fold(term).split(" ").filter(Boolean);
-  const a = await searchOffers(term, zip, httpGet);
-  const exact = a.offers.filter(o => matchLevel(o, term) === 2);
-  let maybe = [], report = a.report;
-  if (words.length > 1) {
-    const b = await searchOffers(words[0], zip, httpGet);
-    report = report.concat(b.report);
-    const ids = {};
-    for (const o of exact) ids[o.id] = 1;
-    for (const o of a.offers.concat(b.offers)) {
-      if (ids[o.id]) continue;
-      ids[o.id] = 1;
-      if (matchLevel(o, term) === 2) exact.push(o);
-      else if (matchLevel(o, words[0]) === 2 && isAssortment(o)) maybe.push(o);
-    }
+  const r = await searchOffers(term, loc, httpGet);
+  const exact = [], maybe = [];
+  const score = o => { const hay = fold(o.brand + " " + o.title); return words.filter(w => hay.indexOf(w) >= 0).length; };
+  for (const o of r.offers) {
+    if (matchLevel(o, term) === 2) exact.push(o);
+    // Same brand; without a brand line only groceries count (they carry a unit price, toys do not).
+    else if (words.length > 1 && (o.brand ? fold(o.brand).indexOf(words[0]) === 0 : o.desc && fold(o.title).indexOf(words[0]) === 0)) maybe.push(o);
   }
-  return { exact, maybe, report };
+  maybe.sort((a, b) => score(b) - score(a));
+  return { exact, maybe, report: r.report };
 }
 
 function fmtPrice(p) { return p.toFixed(2).replace(".", ",") + " €"; }

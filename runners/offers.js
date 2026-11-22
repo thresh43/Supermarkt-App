@@ -5,8 +5,10 @@
 function kvGet(k, def) {
   try { const r = CapacitorKV.get(k); return r && r.value != null && r.value !== "" ? r.value : def; } catch (e) { return def; }
 }
-async function httpGet(url) {
-  const res = await fetch(url, { headers: { Accept: "text/html" } });
+async function httpGet(url, cookie) {
+  const headers = { Accept: "text/html" };
+  if (cookie) headers.Cookie = cookie;
+  const res = await fetch(url, { headers });
   return { status: res.status, text: await res.text() };
 }
 
@@ -19,14 +21,14 @@ addEventListener("checkOffers", async (resolve, reject) => {
     const limit = Object.keys(chains).length > 0;
     const list = [];
     for (const term of cfg.watch) {
-      const r = await watchSearch(term, cfg.zip || "", httpGet);
+      const r = await watchSearch(term, cfg.loc || null, httpGet);
       const hits = r.exact.map(o => [o, true]).concat(r.maybe.map(o => [o, false]));
       for (const [o, exact] of hits) {
         if (seen.indexOf(o.id) >= 0 || (limit && !chains[o.chain])) continue;
         seen.push(o.id);
         const st = chains[o.chain];
         const until = o.to ? " · bis " + o.to.slice(8, 10) + "." + o.to.slice(5, 7) + "." : "";
-        const body = o.title + " · " + fmtPrice(o.price) + until + (st ? " · " + st.km.toFixed(1).replace(".", ",") + " km" : "");
+        const body = [o.brand, o.title].filter(Boolean).join(" ") + " · " + fmtPrice(o.price) + until + (st ? " · " + st.km.toFixed(1).replace(".", ",") + " km" : "");
         list.push({
           id: o.id % 2000000000, title: (exact ? term + " im Angebot" : term + ": evtl. im Angebot") + " · " + o.retailer,
           body, largeBody: body, channelId: "offers", smallIcon: "ic_stat_offer",
