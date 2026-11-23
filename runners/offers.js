@@ -25,7 +25,7 @@ addEventListener("checkOffers", async (resolve, reject) => {
     const list = [];
     let reached = false;
     for (const term of cfg.watch) {
-      const r = await watchSearch(term, cfg.loc || null, httpGet, (cfg.watchQ || {})[term]);
+      const r = await watchSearch(term, cfg.loc || null, httpGet, (cfg.watchQ || {})[term], far);
       if (r.report.some(x => !x.error)) reached = true;
       const lines = [];
       for (const o of r.exact.concat(r.maybe)) {

@@ -48,12 +48,19 @@ assert.ok(decodeURIComponent(api.locationCookie({ lat: 50.94, lon: 6.96, zip: "5
 // Keyword fallback, location cookie, and the watch rules
 (async () => {
   const calls = [];
-  const get = async (url, cookie) => { calls.push([url, cookie]); return /Monster-Energy$/.test(url) ? { status: 200, text: kdPage } : /angebote\/monster-energy$/.test(url) ? { status: 200, text: mpPage } : { status: 404, text: "" }; };
-  const r = await api.watchSearch("Monster Energy Ultra White", { lat: 50.94, lon: 6.96, zip: "50667", label: "50667 Köln" }, get);
-  assert.deepStrictEqual(calls.map(c => c[0].split(".de")[1]), ["/Angebote/Monster-Energy-Ultra-White", "/Angebote/Monster-energy-ultra-white", "/Angebote/Monster-Energy", "/angebote/monster-energy-ultra-white", "/angebote/monster-energy"]);
+  const retailerPage = `<section id="OfferGrid_Main"><div role="list">${kdCard("Monster", "Energy Drink Mango", "Trinkgut", "1,09")}${kdCard("Monster", "Energy Drink", "REWE", "0,99")}</div></section>
+    <img title="Monster Angebot im Trinkgut Prospekt, gültig von ${dm(d(-1))}${d(-1).getFullYear()} bis ${dm(d(4))}${d(4).getFullYear()}"/>`;
+  const get = async (url, cookie) => { calls.push([url, cookie]); return /Trinkgut\/Sortiment/.test(url) ? { status: 200, text: retailerPage } : /Angebote\/Monster-Energy$/.test(url) ? { status: 200, text: kdPage } : /angebote\/monster-energy$/.test(url) ? { status: 200, text: mpPage } : { status: 404, text: "" }; };
+  const r = await api.watchSearch("Monster Energy Ultra White", { lat: 50.94, lon: 6.96, zip: "50667", label: "50667 Köln" }, get, null, ["lidl"]);
+  const retailer = calls.filter(c => /\/Sortiment\//.test(c[0]));
+  assert.ok(retailer.some(c => c[0].endsWith("/Trinkgut/Sortiment/Monster-Energy")), "beverage markets are asked too");
+  assert.ok(!retailer.some(c => /\/Lidl\//.test(c[0])), "chains without a store nearby are skipped");
+  assert.deepStrictEqual(calls.filter(c => !/\/Sortiment\//.test(c[0])).map(c => c[0].split(".de")[1]), ["/Angebote/Monster-Energy-Ultra-White", "/Angebote/Monster-energy-ultra-white", "/Angebote/Monster-Energy", "/angebote/monster-energy-ultra-white", "/angebote/monster-energy"]);
   assert.ok(calls[0][1].startsWith("location="));
   assert.deepStrictEqual(r.exact.map(x => x.retailer), ["NORMA"]);
-  assert.deepStrictEqual(r.maybe.map(x => x.retailer).sort(), ["Marktkauf", "PENNY", "trinkgut"], "toys and other brands are not reported");
+  assert.deepStrictEqual(r.maybe.map(x => x.retailer + " " + x.price).sort(), ["Marktkauf 0.99", "PENNY 0.89", "trinkgut 0.99", "trinkgut 1.09"], "toys, other brands and foreign offers on a retailer page are not reported");
+  assert.ok(new Date(r.maybe.find(x => x.price === 1.09).from) < new Date(), "retailer page states the flyer dates");
+  assert.strictEqual(r.report[1].source, "kaufDA Händlerseiten");
   assert.strictEqual(r.report[0].place, "50667 Köln");
   assert.strictEqual(r.report[0].found, 3);
   console.log("ok");

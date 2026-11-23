@@ -214,6 +214,8 @@ function applyRadius() {
   }
   stores.sort((a, b) => a.km - b.km);
 }
+// Chains that were looked up and have no store inside the radius.
+const farChains = () => Object.keys(S.stores).filter(c => known(c) && !nearest(c));
 const shownOffers = () => Object.values(watchHits).reduce((all, h) => all.concat(h.exact || [], h.maybe || []), (lastSearch && lastSearch.offers) || []);
 function refresh() {
   applyRadius(); render(); renderStores();
@@ -222,7 +224,7 @@ function refresh() {
 }
 async function checkWatch() {
   for (const term of S.watch) {
-    try { const r = await watchSearch(term, S.loc, httpGet, S.watchQ[term]); watchHits[term] = r; reports = r.report; }
+    try { const r = await watchSearch(term, S.loc, httpGet, S.watchQ[term], farChains()); watchHits[term] = r; reports = r.report; }
     catch (e) { watchHits[term] = { error: (e && e.message) || String(e) }; }
     renderWatch(); renderDiag();
     ensureStores(shownOffers());
@@ -230,7 +232,7 @@ async function checkWatch() {
 }
 async function runSearch(q) {
   lastSearch = { q, loading: true }; renderResults();
-  const r = await searchOffers(q, S.loc, httpGet);
+  const r = await searchOffers(q, S.loc, httpGet, farChains());
   reports = r.report;
   const offers = r.offers.filter(o => o.full || matchLevel(o, q) > 0);
   for (const o of offers) o.rank = matchLevel(o, q); // offers naming the term come first
@@ -256,7 +258,7 @@ async function syncRunner() {
   if (!BR) return;
   const chains = {};
   for (const s of stores) if (!chains[s.chain]) chains[s.chain] = { km: s.km };
-  const far = Object.keys(S.stores).filter(c => known(c) && !chains[c]); // chains known to have no store in the radius
+  const far = farChains();
   try { await BR.dispatchEvent({ label: RUNNER, event: "config", details: { notify: S.notify, watch: S.watch, watchQ: S.watchQ, loc: S.loc, chains, far } }); } catch (e) { /* runner not ready */ }
 }
 

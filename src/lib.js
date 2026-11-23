@@ -12,6 +12,16 @@ const SOURCES = [
     url: words => "https://www.meinprospekt.de/angebote/" + words.join("-"), variants: 1 },
 ];
 
+// kaufDA also has one page per retailer and keyword ("/Trinkgut/Sortiment/Bier"). The general
+// keyword page only shows its top offers, often from one or two chains, so these pages are read
+// as well: the big supermarkets and discounters plus the beverage markets. [page name, chain key]
+const RETAILER_PAGES = [
+  ["REWE", "rewe"], ["Edeka", "edeka"], ["E-center", "edeka"], ["Aldi-Sued", "aldi"], ["Aldi-Nord", "aldi"], ["Lidl", "lidl"],
+  ["Penny-Markt", "penny"], ["Netto-Marken-Discount", "netto"], ["Kaufland", "kaufland"], ["Norma", "norma"], ["Marktkauf", "marktkauf"],
+  ["Globus", "globus"], ["tegut", "tegut"], ["HIT-Markt", "hit"],
+  ["Trinkgut", "trinkgut"], ["Getraenke-Hoffmann", "hoffmann"], ["Netto-Getraenke-Discount", "netto"],
+];
+
 // "Käse Aufschnitt" -> ["kaese", "aufschnitt"]
 function slugWords(q) {
   return String(q).toLowerCase().replace(/ä/g, "ae").replace(/ö/g, "oe").replace(/ü/g, "ue").replace(/ß/g, "ss")
@@ -81,9 +91,12 @@ function validityByChain(html) {
   const cards = [
     new RegExp("<p[^>]*>([^<]{2,60})</p>(?:<p[^>]*>[^<]*</p>)?<p[^>]*>" + range, "g"),          // MeinProspekt
     new RegExp(" bei ([^<]{2,60})</div><div[^>]*><div[^>]*>[^<]*</div><div[^>]*>" + range, "g"), // kaufDA
+    // kaufDA retailer page: title="Bier Angebot im Trinkgut Prospekt, gültig von 23.11.2026 bis 28.11.2026"
+    /()()()()()() im ([^"<,]{2,60}?) Prospekt, gültig von (\d\d)\.(\d\d)\.(\d{4}) bis (\d\d)\.(\d\d)\.(\d{4})/g,
   ];
   let m;
   for (const card of cards) while ((m = card.exec(html))) {
+    if (m[7]) { put(decodeEntities(m[7]), m[10] + "-" + m[9] + "-" + m[8], m[13] + "-" + m[12] + "-" + m[11]); continue; }
     const fromYear = +m[3] > +m[5] ? +m[6] - 1 : +m[6];
     put(decodeEntities(m[1]), fromYear + "-" + m[3] + "-" + m[2], m[6] + "-" + m[5] + "-" + m[4]);
   }
@@ -101,10 +114,10 @@ function nameKey(brand, title) {
 // Parse the offer cards of one page into normalized offers.
 function extractOffers(html, source, pageUrl) {
   const body = html.replace(/<script[\s\S]*?<\/script>/g, "").replace(/<svg[\s\S]*?<\/svg>/g, "");
-  const grid = /id="OfferGrid"[\s\S]*?<\/section>/.exec(body);
-  if (!grid) return [];
+  const grids = body.match(/id="OfferGrid[^"]*"[\s\S]*?<\/section>/g); // also "OfferGrid_Main" on retailer pages
+  if (!grids) return [];
   const valid = validityByChain(html), seen = {}, out = [], now = Date.now();
-  for (const item of grid[0].split('role="listitem"').slice(1)) {
+  for (const item of grids.join("").split('role="listitem"').slice(1)) {
     const lines = [];
     const re = /<p[^>]*>([^<]*)<\/p>/g;
     let m;
@@ -143,11 +156,21 @@ function matchLevel(offer, query) {
 // Fetch all sources for one term. A source only knows keyword pages, so the term is tried as a
 // whole first and then shortened ("monster ultra white" -> "monster ultra" -> "monster").
 // Returns { offers, report } - report says what each source delivered.
-async function searchOffers(query, loc, httpGet) {
+// `skipChains`: chains known to have no store in the radius; their retailer pages are not fetched.
+async function searchOffers(query, loc, httpGet, skipChains) {
   const words = slugWords(query), offers = [], report = [], seen = {};
+  const add = (list, entry, full) => {
+    for (const o of list) {
+      entry.found++;
+      o.full = full;
+      const k = [nameKey(o.brand, o.title), o.chain, o.price].join("|");
+      if (!seen[k]) { seen[k] = 1; offers.push(o); }
+    }
+  };
   const cookie = locationCookie(loc);
   for (const src of SOURCES) {
     const entry = { source: src.name, url: "", status: 0, found: 0, error: "", place: "" };
+    let extra = null;
     try {
       let page = null;
       for (let n = words.length; n > 0 && !page; n = n > 2 ? 2 : n - 1) {
@@ -163,17 +186,34 @@ async function searchOffers(query, loc, httpGet) {
       else {
         const place = /"city":"([^"]*)"[^{}]*?"zip":"([^"]*)"/.exec(page.text);
         entry.place = place ? place[2] + " " + place[1] : "";
-        for (const o of extractOffers(page.text, src, entry.url)) {
-          entry.found++;
-          o.full = page.full;
-          const k = [nameKey(o.brand, o.title), o.chain, o.price].join("|");
-          if (!seen[k]) { seen[k] = 1; offers.push(o); }
-        }
+        add(extractOffers(page.text, src, entry.url), entry, page.full);
+        if (src.id === "kaufda") extra = await retailerPages(src, entry.url.split("/").pop(), page.full);
       }
     } catch (e) { entry.error = String((e && e.message) || e); }
     report.push(entry);
+    if (extra) report.push(extra);
   }
   return { offers, report };
+
+  async function retailerPages(src, keyword, full) {
+    const entry = { source: src.name + " Händlerseiten", url: "", status: 200, found: 0, error: "", place: "" };
+    const pages = RETAILER_PAGES.filter(p => !skipChains || skipChains.indexOf(p[1]) < 0);
+    let hits = 0;
+    for (let i = 0; i < pages.length; i += 4) {
+      await Promise.all(pages.slice(i, i + 4).map(async p => {
+        const url = "https://www.kaufda.de/" + p[0] + "/Sortiment/" + keyword;
+        try {
+          const res = await httpGet(url, cookie);
+          if (res.status < 200 || res.status >= 300) return;
+          hits++;
+          // The page also lists other retailers; keep only this retailer's own offers.
+          add(extractOffers(res.text, src, url).filter(o => o.chain === p[1]), entry, full);
+        } catch (e) { /* one missing retailer page does not matter */ }
+      }));
+    }
+    entry.url = hits + " von " + pages.length + " Händlerseiten hatten den Begriff";
+    return entry;
+  }
 }
 
 function distanceKm(aLat, aLon, bLat, bLon) {
@@ -185,9 +225,9 @@ function distanceKm(aLat, aLon, bLat, bLon) {
 // Search for a watched product. `exact` names the product in full; `maybe` is an offer of the
 // same brand where the flyer does not name the variant, so it has to be checked in the store.
 // `query` is the search term whose page listed the product, if it was added from search results.
-async function watchSearch(term, loc, httpGet, query) {
+async function watchSearch(term, loc, httpGet, query, skipChains) {
   const words = fold(term).split(" ").filter(Boolean);
-  const r = await searchOffers(query || term, loc, httpGet);
+  const r = await searchOffers(query || term, loc, httpGet, skipChains);
   const exact = [], maybe = [];
   const score = o => { const hay = fold(o.brand + " " + o.title); return words.filter(w => hay.indexOf(w) >= 0).length; };
   for (const o of r.offers) {
